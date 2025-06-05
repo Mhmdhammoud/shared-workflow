@@ -1,0 +1,493 @@
+name: Reusable Backend Code Quality Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '18'
+      package_manager:
+        description: 'Package manager (npm or yarn)'
+        required: false
+        type: string
+        default: 'yarn'
+      lint_command:
+        description: 'Lint command'
+        required: false
+        type: string
+        default: 'yarn lint'
+      type_check_command:
+        description: 'TypeScript type check command'
+        required: false
+        type: string
+        default: 'yarn test:types'
+      build_command:
+        description: 'Build command'
+        required: false
+        type: string
+        default: 'yarn build'
+      audit_command:
+        description: 'Security audit command'
+        required: false
+        type: string
+        default: 'yarn audit --level moderate'
+      install_command:
+        description: 'Install dependencies command'
+        required: false
+        type: string
+        default: 'yarn install --frozen-lockfile'
+      cache_dependency_path:
+        description: 'Path to cache dependencies'
+        required: false
+        type: string
+        default: 'yarn.lock'
+      skip_sonar:
+        description: 'Skip SonarQube analysis'
+        required: false
+        type: boolean
+        default: false
+      skip_security:
+        description: 'Skip security audit'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SONAR_TOKEN:
+        description: 'SonarQube token from consuming repository'
+        required: false
+      SONAR_HOST_URL:
+        description: 'SonarQube host URL from consuming repository'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  # Job 1: ESLint Check
+  eslint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run ESLint
+        run: ${{ inputs.lint_command }}
+
+  # Job 2: TypeScript Check
+  typescript:
+    name: TypeScript Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run TypeScript type check
+        run: ${{ inputs.type_check_command }}
+
+  # Job 3: Build
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [eslint, typescript]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build project
+        run: ${{ inputs.build_command }}
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+
+  # Job 4: Security Audit
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_security }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run security audit
+        run: |
+          echo "🔍 Running security audit..."
+          ${{ inputs.audit_command }} || echo "⚠️ Vulnerabilities found (exit code: $?)"
+          echo "Audit completed - check results above"
+
+  # Job 5: SonarQube Analysis
+  sonarqube:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: ${{ !inputs.skip_sonar && secrets.SONAR_TOKEN != '' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Read SonarQube project key
+        id: sonar_config
+        run: |
+          if [[ -f "sonar-project.properties" ]]; then
+            PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d'=' -f2 | tr -d ' ')
+            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
+            echo "Found SonarQube project key: $PROJECT_KEY"
+          else
+            # Fallback to repository name if no sonar-project.properties
+            PROJECT_KEY=$(echo "${{ github.repository }}" | tr '/' '-')
+            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
+            echo "No sonar-project.properties found, using repository name: $PROJECT_KEY"
+          fi
+          
+          # Make project key available for subsequent steps
+          echo "SONAR_PROJECT_KEY=$PROJECT_KEY" >> $GITHUB_ENV
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate Check
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Job 6: PR Comments & Summary
+  pr-summary:
+    name: PR Quality Summary
+    runs-on: ubuntu-latest
+    needs: [eslint, typescript, build, security, sonarqube]
+    if: always() && github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read SonarQube project key
+        id: sonar_config
+        run: |
+          if [[ -f "sonar-project.properties" ]]; then
+            PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d'=' -f2 | tr -d ' ')
+            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
+            echo "Found SonarQube project key: $PROJECT_KEY"
+          else
+            # Fallback to repository name if no sonar-project.properties
+            PROJECT_KEY=$(echo "${{ github.repository }}" | tr '/' '-')
+            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
+            echo "No sonar-project.properties found, using repository name: $PROJECT_KEY"
+          fi
+
+      - name: PR Comment with Full Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr_number = context.payload.pull_request.number;
+            
+            const eslintResult = '${{ needs.eslint.result }}';
+            const typescriptResult = '${{ needs.typescript.result }}';
+            const buildResult = '${{ needs.build.result }}';
+            const securityResult = '${{ needs.security.result }}' || 'skipped';
+            const sonarResult = '${{ needs.sonarqube.result }}' || 'skipped';
+            const projectKey = '${{ steps.sonar_config.outputs.project_key }}';
+            const skipSonar = '${{ inputs.skip_sonar }}' === 'true';
+            const skipSecurity = '${{ inputs.skip_security }}' === 'true';
+            
+            // Fetch SonarQube metrics
+            let sonarData = null;
+            let sonarError = null;
+            try {
+              const sonarUrl = process.env.SONAR_HOST_URL;
+              const sonarToken = process.env.SONAR_TOKEN;
+              
+              if (sonarToken && sonarResult === 'success' && !skipSonar && sonarUrl) {
+                const metricsResponse = await fetch(
+                  `${sonarUrl}/api/measures/component?component=${projectKey}&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,ncloc,sqale_rating,reliability_rating,security_rating,alert_status,sqale_index`,
+                  {
+                    headers: {
+                      'Authorization': `Basic ${Buffer.from(sonarToken + ':').toString('base64')}`
+                    }
+                  }
+                );
+                
+                if (metricsResponse.ok) {
+                  const data = await metricsResponse.json();
+                  sonarData = data.component.measures.reduce((acc, measure) => {
+                    acc[measure.metric] = measure.value;
+                    return acc;
+                  }, {});
+                } else {
+                  sonarError = `API Error: ${metricsResponse.status}`;
+                }
+              }
+            } catch (error) {
+              console.log('Could not fetch SonarQube data:', error.message);
+              sonarError = error.message;
+            }
+            
+            const getEmoji = (result) => {
+              if (result === 'skipped') return '⏭️';
+              return result === 'success' ? '✅' : result === 'failure' ? '❌' : '⚪';
+            };
+            
+            const getRatingEmoji = (rating) => {
+              if (!rating) return '⚪';
+              switch(rating) {
+                case 'A': case '1.0': return '🟢';
+                case 'B': case '2.0': return '🟡';
+                case 'C': case '3.0': return '🟠';
+                case 'D': case '4.0': return '🔴';
+                case 'E': case '5.0': return '🔴';
+                default: return '⚪';
+              }
+            };
+            
+            const formatNumber = (num) => {
+              if (!num) return '0';
+              return new Intl.NumberFormat().format(parseInt(num));
+            };
+            
+            const formatTime = (minutes) => {
+              if (!minutes) return '0min';
+              const mins = parseInt(minutes);
+              if (mins < 60) return `${mins}min`;
+              const hours = Math.floor(mins / 60);
+              const remainingMins = mins % 60;
+              return `${hours}h ${remainingMins}min`;
+            };
+            
+            let sonarDetails = '';
+            if (skipSonar) {
+              sonarDetails = `
+            ### 📊 SonarQube Analysis: Skipped
+            SonarQube analysis was skipped for this workflow run.`;
+            } else if (sonarResult === 'success' && sonarData) {
+              const qualityGate = sonarData.alert_status === 'OK' ? '✅ PASSED' : '❌ FAILED';
+              
+              sonarDetails = `
+            ### 📊 SonarQube Detailed Report:
+            
+            **Project**: \`${projectKey}\`  
+            **Quality Gate**: ${qualityGate}
+            
+            | Metric | Value | Rating |
+            |--------|-------|--------|
+            | 🐛 Bugs | ${formatNumber(sonarData.bugs)} | ${getRatingEmoji(sonarData.reliability_rating)} |
+            | 🔒 Vulnerabilities | ${formatNumber(sonarData.vulnerabilities)} | ${getRatingEmoji(sonarData.security_rating)} |
+            | 💻 Code Smells | ${formatNumber(sonarData.code_smells)} | ${getRatingEmoji(sonarData.sqale_rating)} |
+            | 📏 Lines of Code | ${formatNumber(sonarData.ncloc)} | - |
+            | 🔄 Duplicated Lines | ${sonarData.duplicated_lines_density}% | - |
+            | ⏱️ Technical Debt | ${formatTime(sonarData.sqale_index)} | ${getRatingEmoji(sonarData.sqale_rating)} |
+            
+            **Rating Legend**: 🟢 A (Best) • 🟡 B • 🟠 C • 🔴 D/E (Worst)`;
+            } else if (sonarResult === 'failure') {
+              sonarDetails = `
+            ### ❌ SonarQube Analysis Failed:
+            **Project**: \`${projectKey}\`
+            
+            The SonarQube analysis could not complete successfully. This could be due to:
+            - Quality Gate failure (code doesn't meet standards)
+            - Build errors preventing analysis
+            - Configuration issues
+            - Invalid project key in sonar-project.properties
+            
+            **Action Required**: Check the SonarQube Analysis job logs for specific error details.`;
+            } else if (sonarError) {
+              sonarDetails = `
+            ### ⚠️ SonarQube Report:
+            **Project**: \`${projectKey}\`
+            
+            Analysis completed but couldn't fetch detailed metrics: ${sonarError}
+            Check the full dashboard for complete results.`;
+            } else if (sonarResult === 'skipped') {
+              sonarDetails = `
+            ### 📊 SonarQube Analysis: Not Available
+            SonarQube analysis was skipped (no token provided or disabled).`;
+            } else {
+              sonarDetails = `
+            ### 📊 SonarQube Report:
+            **Project**: \`${projectKey}\`
+            
+            Analysis completed. View detailed metrics in the SonarQube dashboard.`;
+            }
+            
+            const requiredJobs = [eslintResult, typescriptResult, buildResult];
+            if (!skipSonar && sonarResult !== 'skipped') requiredJobs.push(sonarResult);
+            
+            const allPassed = requiredJobs.every(result => result === 'success');
+            const securityPassed = securityResult === 'success' || skipSecurity;
+            
+            const sonarUrl = process.env.SONAR_HOST_URL;
+            const dashboardLinks = sonarUrl && !skipSonar ? `
+            - [📊 SonarQube Dashboard](${sonarUrl}/dashboard?id=${projectKey})
+            - [🔒 Security Issues](${sonarUrl}/project/issues?id=${projectKey}&types=VULNERABILITY)
+            - [🐛 Bug Issues](${sonarUrl}/project/issues?id=${projectKey}&types=BUG)` : '- SonarQube analysis skipped for this run';
+            
+            const comment = `## ⚙️ Backend Code Quality Report
+            
+            | Check | Status | Result |
+            |-------|--------|--------|
+            | ESLint | ${getEmoji(eslintResult)} | ${eslintResult} |
+            | TypeScript | ${getEmoji(typescriptResult)} | ${typescriptResult} |
+            | Build | ${getEmoji(buildResult)} | ${buildResult} |
+            | Security Audit | ${getEmoji(securityResult)} | ${securityResult} ${securityPassed ? '' : '(informational)'} |
+            | SonarQube Analysis | ${getEmoji(sonarResult)} | ${sonarResult} |
+            | Dependabot | 🤖 | Automated security updates |
+            ${sonarDetails}
+            
+            ### 📋 Status:
+            ${allPassed
+              ? '🎉 **All backend checks passed!** Your code looks good to merge.' 
+              : '⚠️ **Some backend checks failed.** Please review the issues above before merging.'}
+            
+            ### 🔗 Links:
+            ${dashboardLinks}
+            
+            ---
+            *Backend report updated at: ${new Date().toISOString()}*`;
+            
+            // Delete previous bot comments
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: pr_number,
+            });
+            
+            for (const comment of comments.data) {
+              if (comment.user.type === 'Bot' && comment.body.includes('⚙️ Backend Code Quality Report')) {
+                await github.rest.issues.deleteComment({
+                  owner,
+                  repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pr_number,
+              body: comment
+            });
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Job 7: Overall Status Check
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [eslint, typescript, build, security, sonarqube]
+    if: always()
+    
+    steps:
+      - name: Check overall status
+        run: |
+          echo "=== Backend Quality Gate Results ==="
+          echo "ESLint: ${{ needs.eslint.result }}"
+          echo "TypeScript: ${{ needs.typescript.result }}"
+          echo "Build: ${{ needs.build.result }}"
+          echo "Security: ${{ needs.security.result }}"
+          echo "SonarQube: ${{ needs.sonarqube.result }}"
+          echo "Skip SonarQube: ${{ inputs.skip_sonar }}"
+          echo "Skip Security: ${{ inputs.skip_security }}"
+          echo "=========================="
+          
+          # Required checks (always needed)
+          required_failed=false
+          
+          if [[ "${{ needs.eslint.result }}" != "success" ]]; then
+            echo "❌ ESLint check failed"
+            required_failed=true
+          fi
+          
+          if [[ "${{ needs.typescript.result }}" != "success" ]]; then
+            echo "❌ TypeScript check failed"
+            required_failed=true
+          fi
+          
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "❌ Build check failed"
+            required_failed=true
+          fi
+          
+          # SonarQube check (only if not skipped and token provided)
+          if [[ "${{ inputs.skip_sonar }}" != "true" && "${{ secrets.SONAR_TOKEN }}" != "" ]]; then
+            if [[ "${{ needs.sonarqube.result }}" != "success" ]]; then
+              echo "❌ SonarQube check failed"
+              required_failed=true
+            fi
+          else
+            echo "ℹ️ SonarQube check skipped"
+          fi
+          
+          if [[ "$required_failed" == "true" ]]; then
+            echo "❌ Backend Quality Gate FAILED"
+            echo "Note: Security audit is informational only"
+            exit 1
+          else
+            echo "✅ Backend Quality Gate PASSED"
+          fi
