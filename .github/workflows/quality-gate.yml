@@ -168,15 +168,28 @@ jobs:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
     needs: [build]
-    if: ${{ !inputs.skip_sonar && secrets.SONAR_TOKEN != '' }}
+    if: ${{ !inputs.skip_sonar }}
     
     steps:
+      - name: Check SonarQube configuration
+        id: sonar_check
+        run: |
+          if [[ -z "${{ secrets.SONAR_TOKEN }}" ]]; then
+            echo "skip_sonar=true" >> $GITHUB_OUTPUT
+            echo "⚠️ SONAR_TOKEN not provided, skipping SonarQube analysis"
+          else
+            echo "skip_sonar=false" >> $GITHUB_OUTPUT
+            echo "✅ SonarQube configuration found"
+          fi
+
       - name: Checkout code
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
@@ -184,9 +197,11 @@ jobs:
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
 
       - name: Install dependencies
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         run: ${{ inputs.install_command }}
 
       - name: Read SonarQube project key
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         id: sonar_config
         run: |
           if [[ -f "sonar-project.properties" ]]; then
@@ -204,12 +219,14 @@ jobs:
           echo "SONAR_PROJECT_KEY=$PROJECT_KEY" >> $GITHUB_ENV
 
       - name: SonarQube Scan
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: SonarQube Quality Gate Check
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
@@ -474,9 +491,9 @@ jobs:
             required_failed=true
           fi
           
-          # SonarQube check (only if not skipped and token provided)
-          if [[ "${{ inputs.skip_sonar }}" != "true" && "${{ secrets.SONAR_TOKEN }}" != "" ]]; then
-            if [[ "${{ needs.sonarqube.result }}" != "success" ]]; then
+          # SonarQube check (only if not skipped and has token)
+          if [[ "${{ inputs.skip_sonar }}" != "true" ]]; then
+            if [[ "${{ needs.sonarqube.result }}" != "success" && "${{ needs.sonarqube.result }}" != "skipped" ]]; then
               echo "❌ SonarQube check failed"
               required_failed=true
             fi
