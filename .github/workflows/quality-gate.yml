@@ -311,77 +311,17 @@ jobs:
             echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create Dockerfiles
+      - name: Check Dockerfiles exist
         run: |
-          # Create production Dockerfile
-          cat > Dockerfile.prod << 'EOF'
-          # Production Dockerfile
-          FROM node:${{ inputs.node_version }}-alpine AS base
-
-          # Install dependencies only when needed
-          FROM base AS deps
-          RUN apk add --no-cache libc6-compat
-          WORKDIR /app
-
-          # Install dependencies based on the preferred package manager
-          COPY package*.json ./
-          RUN npm ci --only=production && npm cache clean --force
-
-          # Rebuild the source code only when needed
-          FROM base AS builder
-          WORKDIR /app
-          COPY package*.json ./
-          RUN npm ci
-
-          COPY . .
-          # Build the project
-          RUN ${{ inputs.build_command }}
-
-          # Production image, copy all the files and run the backend
-          FROM base AS runner
-          WORKDIR /app
-
-          ENV NODE_ENV=production
-          ENV PORT=${{ inputs.prod_port }}
-
-          RUN addgroup --system --gid 1001 nodejs
-          RUN adduser --system --uid 1001 backend
-
-          # Copy application code (built JS files and other necessary files)
-          COPY --from=builder --chown=backend:nodejs /app/dist ./dist
-          COPY --from=builder --chown=backend:nodejs /app/*.js ./
-          COPY --from=deps --chown=backend:nodejs /app/node_modules ./node_modules
-          COPY --chown=backend:nodejs package*.json ./
-
-          USER backend
-
-          EXPOSE ${{ inputs.prod_port }}
-
-          CMD ["npm", "start"]
-          EOF
-
-          # Create development Dockerfile
-          cat > Dockerfile.dev << 'EOF'
-          # Development Dockerfile
-          FROM node:${{ inputs.node_version }}-alpine
-
-          WORKDIR /app
-
-          # Install dependencies
-          COPY package*.json ./
-          RUN npm install
-
-          # Copy source code
-          COPY . .
-
-          ENV NODE_ENV=development
-          ENV PORT=${{ inputs.dev_port }}
-
-          EXPOSE ${{ inputs.dev_port }}
-
-          # Use nodemon for development hot reloading
-          CMD ["npm", "run", "start:dev"]
-          EOF
+          if [[ ! -f "Dockerfile.prod" ]]; then
+            echo "❌ Dockerfile.prod not found in repository root"
+            exit 1
+          fi
+          if [[ ! -f "Dockerfile.dev" ]]; then
+            echo "❌ Dockerfile.dev not found in repository root"
+            exit 1
+          fi
+          echo "✅ Both Dockerfiles found"
 
       - name: Extract metadata
         id: docker_meta
