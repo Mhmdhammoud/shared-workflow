@@ -1,4 +1,4 @@
-name: Quality Pipeline
+name: Backend Quality Pipeline
 
 on:
   workflow_call:
@@ -12,37 +12,37 @@ on:
         description: 'Package manager (npm or yarn)'
         required: false
         type: string
-        default: 'yarn'
+        default: 'npm'
       lint_command:
         description: 'Lint command'
         required: false
         type: string
-        default: 'yarn lint'
+        default: 'npm run lint'
       type_check_command:
         description: 'TypeScript type check command'
         required: false
         type: string
-        default: 'yarn test:types'
+        default: 'npm run test:types'
       build_command:
         description: 'Build command'
         required: false
         type: string
-        default: 'yarn build'
+        default: 'npm run build'
       audit_command:
         description: 'Security audit command'
         required: false
         type: string
-        default: 'yarn audit --level moderate'
+        default: 'npm audit --audit-level moderate'
       install_command:
         description: 'Install dependencies command'
         required: false
         type: string
-        default: 'yarn install --frozen-lockfile'
+        default: 'npm ci'
       cache_dependency_path:
         description: 'Path to cache dependencies'
         required: false
         type: string
-        default: 'yarn.lock'
+        default: 'package-lock.json'
       skip_sonar:
         description: 'Skip SonarQube analysis'
         required: false
