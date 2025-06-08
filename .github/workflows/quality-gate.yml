@@ -365,7 +365,7 @@ jobs:
   pr-summary:
     name: PR Quality Summary
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build, security, sonarqube, docker-build]
+    needs: [eslint, typescript, build, security, sonarqube]
     if: always() && github.event_name == 'pull_request'
     
     steps:
@@ -397,7 +397,7 @@ jobs:
             const buildResult = '${{ needs.build.result }}';
             const securityResult = '${{ needs.security.result }}' || 'skipped';
             const sonarResult = '${{ needs.sonarqube.result }}' || 'skipped';
-            const dockerResult = '${{ needs.docker-build.result }}' || 'skipped';
+            const dockerResult = '${{ needs.docker-build.result }}' || 'not_started';
             const projectKey = '${{ steps.sonar_config.outputs.project_key }}';
             const skipSonar = '${{ inputs.skip_sonar }}' === 'true';
             const skipSecurity = '${{ inputs.skip_security }}' === 'true';
@@ -420,7 +420,35 @@ jobs:
             };
             
             const coreChecksPassed = [eslintResult, typescriptResult, buildResult].every(result => result === 'success');
-            const dockerBuildInfo = dockerResult === 'skipped' ? 'skipped (core checks failed)' : dockerResult;
+            // Get Docker result from a separate API call since it's not in dependencies
+            let dockerJobResult = 'not_started';
+            try {
+              const workflowRuns = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                event: 'pull_request',
+                head_sha: context.payload.pull_request.head.sha
+              });
+              
+              if (workflowRuns.data.workflow_runs.length > 0) {
+                const currentRun = workflowRuns.data.workflow_runs[0];
+                const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: currentRun.id
+                });
+                
+                const dockerJob = jobs.data.jobs.find(job => job.name === 'Docker Build & Push');
+                if (dockerJob) {
+                  dockerJobResult = dockerJob.conclusion || dockerJob.status || 'in_progress';
+                }
+              }
+            } catch (error) {
+              console.log('Could not fetch Docker job status:', error.message);
+            }
+            
+            const finalDockerResult = dockerJobResult;
+            const dockerBuildInfo = ['not_started', 'skipped'].includes(finalDockerResult) ? 'skipped (core checks failed)' : finalDockerResult;
             
             // Fetch SonarQube data if available
             let sonarData = null;
@@ -518,11 +546,11 @@ jobs:
             | Build | ${getEmoji(buildResult)} | ${buildResult} |
             | Security Audit | ${getEmoji(securityResult)} | ${securityResult} (informational) |
             | SonarQube Analysis | ${getEmoji(sonarResult)} | ${sonarResult} |
-            | Docker Build | ${getEmoji(dockerResult)} | ${dockerBuildInfo} |
+            | Docker Build | ${getEmoji(finalDockerResult)} | ${dockerBuildInfo} |
             
             ### 📋 Status:
             ${coreChecksPassed
-              ? dockerResult === 'success' 
+              ? finalDockerResult === 'success' 
                 ? '🎉 **All checks passed and Docker image built successfully!** Ready to deploy.'
                 : '✅ **Core quality checks passed.** Docker build may have been skipped or failed.'
               : '⚠️ **Core quality checks failed.** Docker build was blocked to prevent broken images.'}
