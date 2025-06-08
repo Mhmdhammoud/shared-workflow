@@ -294,17 +294,28 @@ jobs:
         run: |
           VERSION="${{ steps.package_version.outputs.version }}"
           
-          if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
-            echo "dockerfile=Dockerfile.prod" >> $GITHUB_OUTPUT
-            echo "build_args=NODE_ENV=production" >> $GITHUB_OUTPUT
-            echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:latest,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
-            echo "environment=develop" >> $GITHUB_OUTPUT
-            echo "dockerfile=Dockerfile.dev" >> $GITHUB_OUTPUT
-            echo "build_args=NODE_ENV=development" >> $GITHUB_OUTPUT
-            echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:develop,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION-dev" >> $GITHUB_OUTPUT
+          # Check if this is a push event (merge) or pull request event
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # This is a push/merge event
+            if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+              echo "environment=production" >> $GITHUB_OUTPUT
+              echo "dockerfile=Dockerfile.prod" >> $GITHUB_OUTPUT
+              echo "build_args=NODE_ENV=production" >> $GITHUB_OUTPUT
+              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:latest,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION" >> $GITHUB_OUTPUT
+            elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+              echo "environment=develop" >> $GITHUB_OUTPUT
+              echo "dockerfile=Dockerfile.dev" >> $GITHUB_OUTPUT
+              echo "build_args=NODE_ENV=development" >> $GITHUB_OUTPUT
+              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:develop,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION-dev" >> $GITHUB_OUTPUT
+            else
+              # Push to other branches (shouldn't happen with your trigger, but just in case)
+              echo "environment=feature" >> $GITHUB_OUTPUT
+              echo "dockerfile=Dockerfile.dev" >> $GITHUB_OUTPUT
+              echo "build_args=NODE_ENV=development" >> $GITHUB_OUTPUT
+              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
+            fi
           else
+            # This is a pull request event
             echo "environment=pr" >> $GITHUB_OUTPUT
             echo "dockerfile=Dockerfile.dev" >> $GITHUB_OUTPUT
             echo "build_args=NODE_ENV=development" >> $GITHUB_OUTPUT
@@ -397,8 +408,106 @@ jobs:
               return result === 'success' ? '✅' : result === 'failure' ? '❌' : '⚪';
             };
             
+            const getSeverityEmoji = (severity) => {
+              switch (severity.toLowerCase()) {
+                case 'blocker': return '🚫';
+                case 'critical': return '🔴';
+                case 'major': return '🟠';
+                case 'minor': return '🟡';
+                case 'info': return 'ℹ️';
+                default: return '⚪';
+              }
+            };
+            
             const coreChecksPassed = [eslintResult, typescriptResult, buildResult].every(result => result === 'success');
             const dockerBuildInfo = dockerResult === 'skipped' ? 'skipped (core checks failed)' : dockerResult;
+            
+            // Fetch SonarQube data if available
+            let sonarData = null;
+            let sonarIssues = [];
+            let sonarMetrics = {};
+            
+            if (sonarResult === 'success' && process.env.SONAR_TOKEN && process.env.SONAR_HOST_URL) {
+              try {
+                // Fetch project metrics
+                const metricsResponse = await fetch(
+                  `${process.env.SONAR_HOST_URL}/api/measures/component?component=${projectKey}&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,ncloc,sqale_rating,reliability_rating,security_rating`,
+                  {
+                    headers: {
+                      'Authorization': `Bearer ${process.env.SONAR_TOKEN}`
+                    }
+                  }
+                );
+                
+                if (metricsResponse.ok) {
+                  const metricsData = await metricsResponse.json();
+                  metricsData.component.measures.forEach(measure => {
+                    sonarMetrics[measure.metric] = measure.value;
+                  });
+                }
+                
+                // Fetch issues (bugs, vulnerabilities, code smells)
+                const issuesResponse = await fetch(
+                  `${process.env.SONAR_HOST_URL}/api/issues/search?componentKeys=${projectKey}&resolved=false&ps=20&s=SEVERITY&asc=false`,
+                  {
+                    headers: {
+                      'Authorization': `Bearer ${process.env.SONAR_TOKEN}`
+                    }
+                  }
+                );
+                
+                if (issuesResponse.ok) {
+                  const issuesData = await issuesResponse.json();
+                  sonarIssues = issuesData.issues;
+                }
+              } catch (error) {
+                console.log('Error fetching SonarQube data:', error.message);
+              }
+            }
+            
+            // Build SonarQube section
+            let sonarSection = '';
+            if (sonarResult === 'success' && Object.keys(sonarMetrics).length > 0) {
+              const getRating = (rating) => {
+                const ratings = { '1.0': 'A', '2.0': 'B', '3.0': 'C', '4.0': 'D', '5.0': 'E' };
+                return ratings[rating] || rating;
+              };
+              
+              sonarSection = `
+            ### 📊 SonarQube Analysis Results
+            
+            **Quality Metrics:**
+            | Metric | Value | Rating |
+            |--------|-------|--------|
+            | 🐛 Bugs | ${sonarMetrics.bugs || '0'} | ${getRating(sonarMetrics.reliability_rating)} |
+            | 🔒 Vulnerabilities | ${sonarMetrics.vulnerabilities || '0'} | ${getRating(sonarMetrics.security_rating)} |
+            | 🧼 Code Smells | ${sonarMetrics.code_smells || '0'} | ${getRating(sonarMetrics.sqale_rating)} |
+            | 📏 Lines of Code | ${sonarMetrics.ncloc || 'N/A'} | - |
+            | 🧪 Coverage | ${sonarMetrics.coverage ? sonarMetrics.coverage + '%' : 'N/A'} | - |
+            | 📋 Duplicated Lines | ${sonarMetrics.duplicated_lines_density ? sonarMetrics.duplicated_lines_density + '%' : 'N/A'} | - |
+            
+            ${sonarIssues.length > 0 ? `**Top Issues Found:**
+            ${sonarIssues.slice(0, 10).map(issue => 
+              `${getSeverityEmoji(issue.severity)} **${issue.severity}** - ${issue.message}  
+              📁 \`${issue.component.split(':').pop()}\` (Line ${issue.textRange ? issue.textRange.startLine : 'N/A'})`
+            ).join('\n')}
+            
+            ${sonarIssues.length > 10 ? `*... and ${sonarIssues.length - 10} more issues*` : ''}
+            
+            [📈 View Full Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})` : '✅ **No issues found!**'}
+            `;
+            } else if (sonarResult === 'success') {
+              sonarSection = `
+            ### 📊 SonarQube Analysis Results
+            ✅ **Analysis completed successfully**  
+            [📈 View Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})
+            `;
+            } else if (sonarResult === 'failure') {
+              sonarSection = `
+            ### 📊 SonarQube Analysis Results
+            ❌ **Analysis failed** - Check the logs for details
+            `;
+            }
             
             const comment = `## ⚙️ Backend Quality + Docker Pipeline Report
             
@@ -417,7 +526,7 @@ jobs:
                 ? '🎉 **All checks passed and Docker image built successfully!** Ready to deploy.'
                 : '✅ **Core quality checks passed.** Docker build may have been skipped or failed.'
               : '⚠️ **Core quality checks failed.** Docker build was blocked to prevent broken images.'}
-            
+            ${sonarSection}
             ### 🐳 Docker Build Policy:
             - Docker build **only runs** if ESLint, TypeScript, and Build checks all pass
             - Security audit and SonarQube issues **do not block** Docker builds (informational only)
