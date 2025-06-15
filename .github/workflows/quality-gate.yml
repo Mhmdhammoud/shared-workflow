@@ -197,8 +197,8 @@ jobs:
   sonarqube:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: ${{ inputs.skip_build && '[eslint, typescript]' || '[build]' }}
-    if: ${{ !inputs.skip_sonar }}
+    needs: [eslint, typescript, build]
+    if: ${{ !inputs.skip_sonar && (success() || (inputs.skip_build && needs.eslint.result == 'success' && needs.typescript.result == 'success')) }}
     
     steps:
       - name: Check SonarQube configuration
@@ -270,8 +270,8 @@ jobs:
   docker-build:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: ${{ inputs.skip_build && '[eslint, typescript]' || '[eslint, typescript, build]' }}
-    if: ${{ !inputs.skip_docker }}
+    needs: [eslint, typescript, build]
+    if: ${{ !inputs.skip_docker && (success() || (inputs.skip_build && needs.eslint.result == 'success' && needs.typescript.result == 'success')) }}
     
     steps:
       - name: Checkout repository
