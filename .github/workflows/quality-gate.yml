@@ -73,6 +73,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_build:
+        description: 'Skip build step'
+        required: false
+        type: boolean
+        default: false
     secrets:
       SONAR_TOKEN:
         description: 'SonarQube token from consuming repository'
@@ -141,6 +146,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     needs: [eslint, typescript]
+    if: ${{ !inputs.skip_build }}
     
     steps:
       - name: Checkout code
@@ -187,11 +193,11 @@ jobs:
           ${{ inputs.audit_command }} || echo "⚠️ Vulnerabilities found (exit code: $?)"
           echo "Audit completed - check results above"
 
-  # Job 5: SonarQube Analysis (runs in parallel, doesn't block Docker)
+  # Job 5: SonarQube Analysis (runs after build if build is enabled, otherwise after eslint/typescript)
   sonarqube:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: ${{ inputs.skip_build && '[eslint, typescript]' || '[build]' }}
     if: ${{ !inputs.skip_sonar }}
     
     steps:
@@ -224,6 +230,14 @@ jobs:
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         run: ${{ inputs.install_command }}
 
+      - name: Build for SonarQube (if build is skipped)
+        if: steps.sonar_check.outputs.skip_sonar == 'false' && inputs.skip_build
+        run: |
+          echo "🔨 Building project for SonarQube analysis..."
+          ${{ inputs.build_command }}
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+
       - name: Read SonarQube project key
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         id: sonar_config
@@ -252,11 +266,11 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Job 6: Docker Build (only runs if ESLint, TypeScript, and Build pass)
+  # Job 6: Docker Build (dependencies adjusted based on whether build is skipped)
   docker-build:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build]
+    needs: ${{ inputs.skip_build && '[eslint, typescript]' || '[eslint, typescript, build]' }}
     if: ${{ !inputs.skip_docker }}
     
     steps:
@@ -394,7 +408,7 @@ jobs:
             
             const eslintResult = '${{ needs.eslint.result }}';
             const typescriptResult = '${{ needs.typescript.result }}';
-            const buildResult = '${{ needs.build.result }}';
+            const buildResult = '${{ needs.build.result }}' || 'skipped';
             const securityResult = '${{ needs.security.result }}' || 'skipped';
             const sonarResult = '${{ needs.sonarqube.result }}' || 'skipped';
             const dockerResult = '${{ needs.docker-build.result }}' || 'not_started';
@@ -402,6 +416,7 @@ jobs:
             const skipSonar = '${{ inputs.skip_sonar }}' === 'true';
             const skipSecurity = '${{ inputs.skip_security }}' === 'true';
             const skipDocker = '${{ inputs.skip_docker }}' === 'true';
+            const skipBuild = '${{ inputs.skip_build }}' === 'true';
             
             const getEmoji = (result) => {
               if (result === 'skipped') return '⏭️';
@@ -419,7 +434,13 @@ jobs:
               }
             };
             
-            const coreChecksPassed = [eslintResult, typescriptResult, buildResult].every(result => result === 'success');
+            // Determine core checks - build is optional now
+            const coreChecks = [eslintResult, typescriptResult];
+            if (!skipBuild) {
+              coreChecks.push(buildResult);
+            }
+            const coreChecksPassed = coreChecks.every(result => result === 'success');
+            
             // Get Docker result from a separate API call since it's not in dependencies
             let dockerJobResult = 'not_started';
             try {
@@ -543,7 +564,7 @@ jobs:
             |-------|--------|--------|
             | ESLint | ${getEmoji(eslintResult)} | ${eslintResult} |
             | TypeScript | ${getEmoji(typescriptResult)} | ${typescriptResult} |
-            | Build | ${getEmoji(buildResult)} | ${buildResult} |
+            | Build | ${getEmoji(buildResult)} | ${buildResult}${skipBuild ? ' (skipped)' : ''} |
             | Security Audit | ${getEmoji(securityResult)} | ${securityResult} (informational) |
             | SonarQube Analysis | ${getEmoji(sonarResult)} | ${sonarResult} |
             | Docker Build | ${getEmoji(finalDockerResult)} | ${dockerBuildInfo} |
@@ -553,12 +574,13 @@ jobs:
               ? finalDockerResult === 'success' 
                 ? '🎉 **All checks passed and Docker image built successfully!** Ready to deploy.'
                 : '✅ **Core quality checks passed.** Docker build may have been skipped or failed.'
-              : '⚠️ **Core quality checks failed.** Docker build was blocked to prevent broken images.'}
+              : `⚠️ **Core quality checks failed.** Docker build was blocked to prevent broken images.`}
             ${sonarSection}
             ### 🐳 Docker Build Policy:
-            - Docker build **only runs** if ESLint, TypeScript, and Build checks all pass
+            - Docker build **only runs** if ${skipBuild ? 'ESLint and TypeScript' : 'ESLint, TypeScript, and Build'} checks all pass
             - Security audit and SonarQube issues **do not block** Docker builds (informational only)
             - Failed core checks = No Docker image to prevent deploying broken code
+            ${skipBuild ? '- **Build step is skipped** - Docker builds without separate build verification' : ''}
             
             ---
             *Pipeline report updated at: ${new Date().toISOString()}*`;
@@ -622,9 +644,14 @@ jobs:
             core_failed=true
           fi
           
-          if [[ "${{ needs.build.result }}" != "success" ]]; then
-            echo "❌ Build check failed"
-            core_failed=true
+          # Build check (only if not skipped)
+          if [[ "${{ inputs.skip_build }}" != "true" ]]; then
+            if [[ "${{ needs.build.result }}" != "success" ]]; then
+              echo "❌ Build check failed"
+              core_failed=true
+            fi
+          else
+            echo "ℹ️ Build check skipped"
           fi
           
           # SonarQube check (only if not skipped)
