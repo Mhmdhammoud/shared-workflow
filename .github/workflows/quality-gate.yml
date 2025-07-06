@@ -1,4 +1,4 @@
-name: Backend Quality + Docker Build Pipeline
+name: Code Quality + Docker Build Pipeline
 
 on:
   workflow_call:
@@ -229,14 +229,6 @@ jobs:
       - name: Install dependencies
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         run: ${{ inputs.install_command }}
-
-      - name: Build for SonarQube (if build is skipped)
-        if: steps.sonar_check.outputs.skip_sonar == 'false' && inputs.skip_build
-        run: |
-          echo "🔨 Building project for SonarQube analysis..."
-          ${{ inputs.build_command }}
-        env:
-          NODE_OPTIONS: '--max_old_space_size=4096'
 
       - name: Read SonarQube project key
         if: steps.sonar_check.outputs.skip_sonar == 'false'
