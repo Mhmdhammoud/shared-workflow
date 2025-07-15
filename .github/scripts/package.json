@@ -1,0 +1,10 @@
+{
+  "name": "shared-workflow-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for shared workflow",
+  "main": "pr-comment.js",
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0"
+  }
+}

@@ -446,6 +446,10 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
+      - name: Install script dependencies
+        run: npm install
+        working-directory: shared-workflow/.github/scripts
+
       - name: Generate PR Comment
         run: node shared-workflow/.github/scripts/pr-comment.js
         env:
