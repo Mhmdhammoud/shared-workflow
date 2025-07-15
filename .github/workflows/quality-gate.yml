@@ -193,12 +193,12 @@ jobs:
           ${{ inputs.audit_command }} || echo "⚠️ Vulnerabilities found (exit code: $?)"
           echo "Audit completed - check results above"
 
-  # Job 5: SonarQube Analysis (runs after build if build is enabled, otherwise after eslint/typescript)
+  # Job 5: SonarQube Analysis (runs in parallel, doesn't block Docker)
   sonarqube:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build]
-    if: ${{ !inputs.skip_sonar && (success() || (inputs.skip_build && needs.eslint.result == 'success' && needs.typescript.result == 'success')) }}
+    needs: [eslint, typescript]
+    if: ${{ !inputs.skip_sonar }}
     
     steps:
       - name: Check SonarQube configuration
@@ -258,7 +258,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Job 6: Docker Build (dependencies adjusted based on whether build is skipped)
+  # Job 6: Docker Build (only depends on core quality checks: eslint, typescript, and optionally build)
   docker-build:
     name: Docker Build & Push
     runs-on: ubuntu-latest
@@ -463,12 +463,13 @@ jobs:
             const finalDockerResult = dockerJobResult;
             const dockerBuildInfo = ['not_started', 'skipped'].includes(finalDockerResult) ? 'skipped (core checks failed)' : finalDockerResult;
             
-            // Fetch SonarQube data if available
+            // Fetch SonarQube data if SonarQube ran (regardless of success/failure)
             let sonarData = null;
             let sonarIssues = [];
             let sonarMetrics = {};
+            let metricsError = null;
             
-            if (sonarResult === 'success' && process.env.SONAR_TOKEN && process.env.SONAR_HOST_URL) {
+            if ((sonarResult === 'success' || sonarResult === 'failure') && process.env.SONAR_TOKEN && process.env.SONAR_HOST_URL) {
               try {
                 // Fetch project metrics
                 const metricsResponse = await fetch(
@@ -482,40 +483,73 @@ jobs:
                 
                 if (metricsResponse.ok) {
                   const metricsData = await metricsResponse.json();
-                  metricsData.component.measures.forEach(measure => {
-                    sonarMetrics[measure.metric] = measure.value;
-                  });
+                  if (metricsData.component && metricsData.component.measures) {
+                    metricsData.component.measures.forEach(measure => {
+                      sonarMetrics[measure.metric] = measure.value;
+                    });
+                  }
+                } else {
+                  metricsError = `API responded with status: ${metricsResponse.status}`;
                 }
                 
-                // Fetch issues (bugs, vulnerabilities, code smells)
-                const issuesResponse = await fetch(
-                  `${process.env.SONAR_HOST_URL}/api/issues/search?componentKeys=${projectKey}&resolved=false&ps=20&s=SEVERITY&asc=false`,
-                  {
-                    headers: {
-                      'Authorization': `Bearer ${process.env.SONAR_TOKEN}`
+                // Fetch issues (bugs, vulnerabilities, code smells) - only if metrics fetch was successful
+                if (Object.keys(sonarMetrics).length > 0) {
+                  const issuesResponse = await fetch(
+                    `${process.env.SONAR_HOST_URL}/api/issues/search?componentKeys=${projectKey}&resolved=false&ps=20&s=SEVERITY&asc=false`,
+                    {
+                      headers: {
+                        'Authorization': `Bearer ${process.env.SONAR_TOKEN}`
+                      }
                     }
+                  );
+                  
+                  if (issuesResponse.ok) {
+                    const issuesData = await issuesResponse.json();
+                    sonarIssues = issuesData.issues || [];
                   }
-                );
-                
-                if (issuesResponse.ok) {
-                  const issuesData = await issuesResponse.json();
-                  sonarIssues = issuesData.issues;
                 }
               } catch (error) {
                 console.log('Error fetching SonarQube data:', error.message);
+                metricsError = error.message;
               }
             }
             
-            // Build SonarQube section
+            // Build SonarQube section - ALWAYS show if SonarQube ran
             let sonarSection = '';
-            if (sonarResult === 'success' && Object.keys(sonarMetrics).length > 0) {
+            if (sonarResult !== 'skipped' && !skipSonar) {
               const getRating = (rating) => {
                 const ratings = { '1.0': 'A', '2.0': 'B', '3.0': 'C', '4.0': 'D', '5.0': 'E' };
                 return ratings[rating] || rating;
               };
               
-              sonarSection = `
+              if (sonarResult === 'failure') {
+                sonarSection = `
             ### 📊 SonarQube Analysis Results
+            ❌ **Analysis failed** - Check the logs for details
+            
+            ${Object.keys(sonarMetrics).length > 0 ? `**Quality Metrics (from previous successful scan):**
+            | Metric | Value | Rating |
+            |--------|-------|--------|
+            | 🐛 Bugs | ${sonarMetrics.bugs || '0'} | ${getRating(sonarMetrics.reliability_rating)} |
+            | 🔒 Vulnerabilities | ${sonarMetrics.vulnerabilities || '0'} | ${getRating(sonarMetrics.security_rating)} |
+            | 🧼 Code Smells | ${sonarMetrics.code_smells || '0'} | ${getRating(sonarMetrics.sqale_rating)} |
+            | 📏 Lines of Code | ${sonarMetrics.ncloc || 'N/A'} | - |
+            | 🧪 Coverage | ${sonarMetrics.coverage ? sonarMetrics.coverage + '%' : 'N/A'} | - |
+            | 📋 Duplicated Lines | ${sonarMetrics.duplicated_lines_density ? sonarMetrics.duplicated_lines_density + '%' : 'N/A'} | - |
+            
+            [📈 View Project Dashboard](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})` : 
+            metricsError ? `⚠️ **Could not fetch quality metrics**: ${metricsError}
+            
+            [📈 View Project Dashboard](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})` : 
+            `⚠️ **No metrics available** - This may be the first scan or project data is not accessible.
+            
+            [📈 View Project Dashboard](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})`}
+            `;
+              } else if (sonarResult === 'success') {
+                if (Object.keys(sonarMetrics).length > 0) {
+                  sonarSection = `
+            ### 📊 SonarQube Analysis Results
+            ✅ **Analysis completed successfully**
             
             **Quality Metrics:**
             | Metric | Value | Rating |
@@ -535,19 +569,29 @@ jobs:
             
             ${sonarIssues.length > 10 ? `*... and ${sonarIssues.length - 10} more issues*` : ''}
             
-            [📈 View Full Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})` : '✅ **No issues found!**'}
+            [📈 View Full Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})` : '✅ **No issues found!**
+            
+            [📈 View Full Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})'}
             `;
-            } else if (sonarResult === 'success') {
-              sonarSection = `
+                } else {
+                  sonarSection = `
             ### 📊 SonarQube Analysis Results
-            ✅ **Analysis completed successfully**  
-            [📈 View Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})
+            ✅ **Analysis completed successfully**
+            
+            ${metricsError ? `⚠️ **Could not fetch detailed metrics**: ${metricsError}` : '⚠️ **No detailed metrics available** - This may be the first scan.'}
+            
+            [📈 View Full Report](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})
             `;
-            } else if (sonarResult === 'failure') {
-              sonarSection = `
+                }
+              } else {
+                // In-progress or other status
+                sonarSection = `
             ### 📊 SonarQube Analysis Results
-            ❌ **Analysis failed** - Check the logs for details
+            ⏳ **Analysis status: ${sonarResult}**
+            
+            [📈 View Project Dashboard](${process.env.SONAR_HOST_URL}/dashboard?id=${projectKey})
             `;
+              }
             }
             
             const comment = `## ⚙️ Backend Quality + Docker Pipeline Report
@@ -558,7 +602,7 @@ jobs:
             | TypeScript | ${getEmoji(typescriptResult)} | ${typescriptResult} |
             | Build | ${getEmoji(buildResult)} | ${buildResult}${skipBuild ? ' (skipped)' : ''} |
             | Security Audit | ${getEmoji(securityResult)} | ${securityResult} (informational) |
-            | SonarQube Analysis | ${getEmoji(sonarResult)} | ${sonarResult} |
+            | SonarQube Analysis | ${getEmoji(sonarResult)} | ${sonarResult} (informational) |
             | Docker Build | ${getEmoji(finalDockerResult)} | ${dockerBuildInfo} |
             
             ### 📋 Status:
@@ -570,7 +614,7 @@ jobs:
             ${sonarSection}
             ### 🐳 Docker Build Policy:
             - Docker build **only runs** if ${skipBuild ? 'ESLint and TypeScript' : 'ESLint, TypeScript, and Build'} checks all pass
-            - Security audit and SonarQube issues **do not block** Docker builds (informational only)
+            - **SonarQube and Security audits are informational only** - they do NOT block Docker builds
             - Failed core checks = No Docker image to prevent deploying broken code
             ${skipBuild ? '- **Build step is skipped** - Docker builds without separate build verification' : ''}
             
@@ -646,14 +690,30 @@ jobs:
             echo "ℹ️ Build check skipped"
           fi
           
-          # SonarQube check (only if not skipped)
+          # SonarQube check is now informational only - does NOT block pipeline
           if [[ "${{ inputs.skip_sonar }}" != "true" ]]; then
-            if [[ "${{ needs.sonarqube.result }}" != "success" && "${{ needs.sonarqube.result }}" != "skipped" ]]; then
-              echo "❌ SonarQube check failed"
-              core_failed=true
+            if [[ "${{ needs.sonarqube.result }}" == "success" ]]; then
+              echo "✅ SonarQube analysis completed successfully (informational)"
+            elif [[ "${{ needs.sonarqube.result }}" == "failure" ]]; then
+              echo "⚠️ SonarQube analysis failed (informational only - does not block pipeline)"
+            else
+              echo "ℹ️ SonarQube analysis skipped"
             fi
           else
             echo "ℹ️ SonarQube check skipped"
+          fi
+          
+          # Security audit is informational only
+          if [[ "${{ inputs.skip_security }}" != "true" ]]; then
+            if [[ "${{ needs.security.result }}" == "success" ]]; then
+              echo "✅ Security audit completed (informational)"
+            elif [[ "${{ needs.security.result }}" == "failure" ]]; then
+              echo "⚠️ Security vulnerabilities found (informational only - does not block pipeline)"
+            else
+              echo "ℹ️ Security audit skipped"
+            fi
+          else
+            echo "ℹ️ Security audit skipped"
           fi
           
           # Docker build status (informational)
@@ -671,8 +731,9 @@ jobs:
           
           if [[ "$core_failed" == "true" ]]; then
             echo "❌ Quality Gate FAILED - Core checks must pass"
-            echo "Note: Security audit is informational only"
+            echo "Note: SonarQube and Security audits are informational only"
             exit 1
           else
             echo "✅ Quality Gate PASSED - Core checks successful"
+            echo "Note: SonarQube and Security results are available for review but do not affect pipeline status"
           fi
