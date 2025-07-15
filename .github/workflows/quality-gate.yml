@@ -433,13 +433,21 @@ jobs:
             echo "No sonar-project.properties found, using repository name: $PROJECT_KEY"
           fi
 
+      - name: Checkout shared workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: mhmdhammoud/shared-workflow
+          ref: master
+          path: shared-workflow
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Node.js for script
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Generate PR Comment
-        run: node .github/scripts/pr-comment.js
+        run: node shared-workflow/.github/scripts/pr-comment.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ESLINT_RESULT: ${{ needs.eslint.result }}
