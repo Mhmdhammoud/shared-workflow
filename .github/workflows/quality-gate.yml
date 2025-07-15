@@ -113,11 +113,19 @@ jobs:
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
 
+      - name: Cache ESLint
+        uses: actions/cache@v4.2.3
+        with:
+          path: .eslintcache
+          key: eslint-${{ runner.os }}-${{ hashFiles('.eslintrc*', 'eslint.config.*', 'package.json', 'src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx') }}
+          restore-keys: |
+            eslint-${{ runner.os }}-
+
       - name: Install dependencies
         run: ${{ inputs.install_command }}
 
       - name: Run ESLint
-        run: ${{ inputs.lint_command }}
+        run: ${{ inputs.lint_command }} --cache
 
   # Job 2: TypeScript Check
   typescript:
@@ -134,6 +142,17 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Cache TypeScript Build Info
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            tsconfig.tsbuildinfo
+            .tsbuildinfo
+            **/*.tsbuildinfo
+          key: tsc-${{ runner.os }}-${{ hashFiles('src/**/*.ts', 'src/**/*.tsx', 'tsconfig*.json', 'package.json') }}
+          restore-keys: |
+            tsc-${{ runner.os }}-
 
       - name: Install dependencies
         run: ${{ inputs.install_command }}
@@ -158,6 +177,18 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Cache Build Output
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            dist/
+            build/
+            .next/
+            out/
+          key: build-${{ runner.os }}-${{ hashFiles('package*.json', 'yarn.lock', 'pnpm-lock.yaml', 'src/**/*', 'tsconfig*.json', 'vite.config.*', 'webpack.config.*', 'next.config.*') }}
+          restore-keys: |
+            build-${{ runner.os }}-
 
       - name: Install dependencies
         run: ${{ inputs.install_command }}
@@ -225,6 +256,17 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Cache SonarQube Scanner
+        if: steps.sonar_check.outputs.skip_sonar == 'false'
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~/.sonar/cache
+            .scannerwork/
+          key: sonar-${{ runner.os }}-${{ hashFiles('src/**/*', 'sonar-project.properties') }}
+          restore-keys: |
+            sonar-${{ runner.os }}-
 
       - name: Install dependencies
         if: steps.sonar_check.outputs.skip_sonar == 'false'
