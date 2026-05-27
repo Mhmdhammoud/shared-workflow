@@ -100,7 +100,6 @@ permissions:
 
 env:
   REGISTRY: ${{ inputs.registry }}
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # Job 1: ESLint Check
@@ -110,17 +109,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
 
       - name: Cache ESLint
-        uses: actions/cache@v4.2.3
+        uses: actions/cache@v5
         with:
           path: .eslintcache
           key: eslint-${{ runner.os }}-${{ hashFiles('.eslintrc*', 'eslint.config.*', 'package.json', 'src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx') }}
@@ -140,17 +139,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
 
       - name: Cache TypeScript Build Info
-        uses: actions/cache@v4.2.3
+        uses: actions/cache@v5
         with:
           path: |
             tsconfig.tsbuildinfo
@@ -175,17 +174,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           cache-dependency-path: ${{ inputs.cache_dependency_path }}
 
       - name: Cache Build Output
-        uses: actions/cache@v4.2.3
+        uses: actions/cache@v5
         with:
           path: |
             dist/
@@ -212,10 +211,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
@@ -251,13 +250,13 @@ jobs:
 
       - name: Checkout code
         if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
         if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
@@ -265,7 +264,7 @@ jobs:
 
       - name: Cache SonarQube Scanner
         if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/cache@v4.2.3
+        uses: actions/cache@v5
         with:
           path: |
             ~/.sonar/cache
@@ -315,10 +314,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
 
@@ -424,7 +423,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Read SonarQube project key
         id: sonar_config
@@ -440,7 +439,7 @@ jobs:
           fi
 
       - name: Checkout shared workflow repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: mhmdhammoud/shared-workflow
           ref: master
@@ -448,7 +447,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js for script
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
 
