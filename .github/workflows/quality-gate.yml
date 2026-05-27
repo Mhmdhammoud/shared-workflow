@@ -100,6 +100,7 @@ permissions:
 
 env:
   REGISTRY: ${{ inputs.registry }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # Job 1: ESLint Check

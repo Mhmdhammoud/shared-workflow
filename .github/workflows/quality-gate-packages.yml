@@ -67,6 +67,9 @@ permissions:
   issues: write
   checks: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # Job 1: Install Dependencies (shared across all jobs)
   install:
