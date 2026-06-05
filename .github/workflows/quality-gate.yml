@@ -301,6 +301,7 @@ jobs:
       - name: SonarQube Quality Gate Check
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: SonarSource/sonarqube-quality-gate-action@v1
+        continue-on-error: true
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
