@@ -83,6 +83,16 @@ on:
         required: false
         type: string
         default: 'linux/amd64,linux/arm64'
+      image_version:
+        description: 'Docker image version tag to publish. Defaults to package.json version.'
+        required: false
+        type: string
+        default: ''
+      checkout_ref:
+        description: 'Repository ref/SHA to check out in consuming repository jobs. Defaults to the triggering ref.'
+        required: false
+        type: string
+        default: ''
     secrets:
       SONAR_TOKEN:
         description: 'SonarQube token from consuming repository'
@@ -110,6 +120,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -140,6 +152,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -175,6 +189,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -212,6 +228,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -252,6 +270,7 @@ jobs:
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -316,6 +335,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -325,9 +346,12 @@ jobs:
       - name: Get package.json version
         id: package_version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="${{ inputs.image_version }}"
+          if [[ -z "$VERSION" ]]; then
+            VERSION=$(node -p "require('./package.json').version")
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Current package.json version: $VERSION"
+          echo "Docker image version: $VERSION"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -425,6 +449,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Read SonarQube project key
         id: sonar_config
