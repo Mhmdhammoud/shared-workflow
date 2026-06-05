@@ -354,12 +354,12 @@ jobs:
               echo "environment=production" >> $GITHUB_OUTPUT
               echo "dockerfile=Dockerfile.prod" >> $GITHUB_OUTPUT
               echo "build_args=NODE_ENV=production" >> $GITHUB_OUTPUT
-              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:latest,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION" >> $GITHUB_OUTPUT
+              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:latest,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:$VERSION" >> $GITHUB_OUTPUT
             elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
               echo "environment=develop" >> $GITHUB_OUTPUT
               echo "dockerfile=Dockerfile.dev" >> $GITHUB_OUTPUT
               echo "build_args=NODE_ENV=development" >> $GITHUB_OUTPUT
-              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:develop,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:v$VERSION-dev" >> $GITHUB_OUTPUT
+              echo "tags=${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:develop,${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}:$VERSION-dev" >> $GITHUB_OUTPUT
             else
               # Push to other branches (shouldn't happen with your trigger, but just in case)
               echo "environment=feature" >> $GITHUB_OUTPUT
