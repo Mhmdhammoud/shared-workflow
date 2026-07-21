@@ -13,6 +13,7 @@ async function main() {
     // Get job results from environment variables
     const eslintResult = process.env.ESLINT_RESULT || 'success';
     const typescriptResult = process.env.TYPESCRIPT_RESULT || 'success';
+    const testResult = process.env.TEST_RESULT || 'skipped';
     const buildResult = process.env.BUILD_RESULT || 'success';
     const securityResult = process.env.SECURITY_RESULT || 'success';
     const sonarResult = process.env.SONAR_RESULT || 'success';
@@ -22,6 +23,7 @@ async function main() {
     const skipSecurity = process.env.SKIP_SECURITY === 'true';
     const skipDocker = process.env.SKIP_DOCKER === 'true';
     const skipBuild = process.env.SKIP_BUILD === 'true';
+    const hasTests = process.env.HAS_TESTS === 'true';
 
     const getEmoji = (result) => {
       if (result === 'skipped') return '⏭️';
@@ -47,6 +49,9 @@ async function main() {
 
     // Determine core checks
     const coreChecks = [eslintResult, typescriptResult];
+    if (hasTests) {
+      coreChecks.push(testResult);
+    }
     if (!skipBuild) {
       coreChecks.push(buildResult);
     }
@@ -350,6 +355,12 @@ async function main() {
       ' | ' +
       typescriptResult +
       ' |\n' +
+      '| Tests | ' +
+      getEmoji(testResult) +
+      ' | ' +
+      testResult +
+      (hasTests ? '' : ' (skipped)') +
+      ' |\n' +
       '| Build | ' +
       getEmoji(buildResult) +
       ' | ' +
@@ -380,7 +391,12 @@ async function main() {
       sonarSection +
       '\n### 🐳 Docker Build Policy:\n' +
       '- Docker build **only runs** if ' +
-      (skipBuild ? 'ESLint and TypeScript' : 'ESLint, TypeScript, and Build') +
+      [
+        'ESLint',
+        'TypeScript',
+        ...(hasTests ? ['Tests'] : []),
+        ...(skipBuild ? [] : ['Build']),
+      ].join(', ') +
       ' checks all pass\n' +
       '- **SonarQube and Security audits are informational only** - they do NOT block Docker builds\n' +
       '- Failed core checks = No Docker image to prevent deploying broken code\n' +
