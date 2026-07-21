@@ -23,6 +23,26 @@ on:
         required: false
         type: string
         default: 'yarn test:types'
+      test_command:
+        description: 'Optional test command; leave blank to skip tests'
+        required: false
+        type: string
+        default: ''
+      coverage_artifact_name:
+        description: 'Optional artifact name used to pass coverage to SonarQube'
+        required: false
+        type: string
+        default: ''
+      coverage_report_path:
+        description: 'Coverage file or directory uploaded by the test job'
+        required: false
+        type: string
+        default: 'coverage/lcov.info'
+      coverage_download_path:
+        description: 'Directory where SonarQube downloads the coverage artifact'
+        required: false
+        type: string
+        default: 'coverage'
       build_command:
         description: 'Build command'
         required: false
@@ -160,7 +180,39 @@ jobs:
       - name: Run TypeScript type check
         run: ${{ inputs.type_check_command }}
 
-  # Job 3: Build
+  # Job 3: Tests and optional coverage report
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    if: ${{ inputs.test_command != '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.cache_dependency_path }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run tests
+        run: ${{ inputs.test_command }}
+
+      - name: Upload coverage report
+        if: ${{ inputs.coverage_artifact_name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.coverage_artifact_name }}
+          path: ${{ inputs.coverage_report_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # Job 4: Build
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -198,7 +250,7 @@ jobs:
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
 
-  # Job 4: Security Audit (runs in parallel, doesn't block Docker)
+  # Job 5: Security Audit (runs in parallel, doesn't block Docker)
   security:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -224,12 +276,12 @@ jobs:
           ${{ inputs.audit_command }} || echo "⚠️ Vulnerabilities found (exit code: $?)"
           echo "Audit completed - check results above"
 
-  # Job 5: SonarQube Analysis (runs in parallel, doesn't block Docker)
+  # Job 6: SonarQube Analysis (runs after tests so coverage can be imported)
   sonarqube:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
-    needs: [eslint, typescript]
-    if: ${{ !inputs.skip_sonar }}
+    needs: [eslint, typescript, tests]
+    if: ${{ !inputs.skip_sonar && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') }}
 
     steps:
       - name: Check SonarQube configuration
@@ -272,6 +324,13 @@ jobs:
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         run: ${{ inputs.install_command }}
 
+      - name: Download coverage report
+        if: steps.sonar_check.outputs.skip_sonar == 'false' && inputs.coverage_artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.coverage_artifact_name }}
+          path: ${{ inputs.coverage_download_path }}
+
       - name: Read SonarQube project key
         if: steps.sonar_check.outputs.skip_sonar == 'false'
         id: sonar_config
@@ -300,12 +359,12 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Job 6: Docker Build (only depends on core quality checks: eslint, typescript, and optionally build)
+  # Job 7: Docker Build (only depends on core quality checks)
   docker-build:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build]
-    if: ${{ !inputs.skip_docker && (success() || (inputs.skip_build && needs.eslint.result == 'success' && needs.typescript.result == 'success')) }}
+    needs: [eslint, typescript, tests, build]
+    if: ${{ !inputs.skip_docker && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') && (inputs.skip_build || needs.build.result == 'success') }}
 
     steps:
       - name: Checkout repository
@@ -409,11 +468,11 @@ jobs:
           echo "Build Args: ${{ steps.meta.outputs.build_args }}"
           echo "Package Version: ${{ steps.package_version.outputs.version }}"
 
-  # Job 7: PR Comments & Summary
+  # Job 8: PR Comments & Summary
   pr-summary:
     name: PR Quality Summary
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build, security, sonarqube]
+    needs: [eslint, typescript, tests, build, security, sonarqube, docker-build]
     if: always() && github.event_name == 'pull_request'
 
     steps:
@@ -456,6 +515,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ESLINT_RESULT: ${{ needs.eslint.result }}
           TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
+          TEST_RESULT: ${{ needs.tests.result }}
+          HAS_TESTS: ${{ inputs.test_command != '' }}
           BUILD_RESULT: ${{ needs.build.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           SONAR_RESULT: ${{ needs.sonarqube.result }}
@@ -468,11 +529,11 @@ jobs:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Job 8: Overall Status Check
+  # Job 9: Overall Status Check
   quality-gate:
     name: Quality Gate
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, build, security, sonarqube, docker-build]
+    needs: [eslint, typescript, tests, build, security, sonarqube, docker-build]
     if: always()
 
     steps:
@@ -481,6 +542,7 @@ jobs:
           echo "=== Backend Quality + Docker Gate Results ==="
           echo "ESLint: ${{ needs.eslint.result }}"
           echo "TypeScript: ${{ needs.typescript.result }}"
+          echo "Tests: ${{ needs.tests.result }}"
           echo "Build: ${{ needs.build.result }}"
           echo "Security: ${{ needs.security.result }}"
           echo "SonarQube: ${{ needs.sonarqube.result }}"
@@ -498,6 +560,16 @@ jobs:
           if [[ "${{ needs.typescript.result }}" != "success" ]]; then
             echo "❌ TypeScript check failed"
             core_failed=true
+          fi
+
+          # Test check (only if configured)
+          if [[ -n "${{ inputs.test_command }}" ]]; then
+            if [[ "${{ needs.tests.result }}" != "success" ]]; then
+              echo "❌ Tests failed"
+              core_failed=true
+            fi
+          else
+            echo "ℹ️ Tests skipped"
           fi
 
           # Build check (only if not skipped)
