@@ -43,6 +43,11 @@ on:
         required: false
         type: string
         default: 'package-lock.json'
+      runner:
+        description: 'Runner label for the cheap jobs (install, eslint, typescript, security). Single label string only - runs-on cannot take a JSON array from a variable. Build and SonarQube always stay on ubuntu-latest.'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
       skip_sonar:
         description: 'Skip SonarQube analysis'
         required: false
@@ -71,7 +76,7 @@ jobs:
   # Job 1: Install Dependencies (shared across all jobs)
   install:
     name: Install Dependencies
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     
     steps:
       - name: Checkout code
@@ -90,7 +95,7 @@ jobs:
   # Job 2: ESLint Check
   eslint:
     name: ESLint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     needs: [install]
     
     steps:
@@ -110,7 +115,7 @@ jobs:
   # Job 3: TypeScript Check
   typescript:
     name: TypeScript Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     needs: [install]
     
     steps:
@@ -152,7 +157,7 @@ jobs:
   # Job 5: Security Audit (runs in parallel, doesn't block Docker)
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     needs: [install]
     if: ${{ !inputs.skip_security }}
     

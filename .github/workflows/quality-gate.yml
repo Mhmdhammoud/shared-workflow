@@ -113,6 +113,26 @@ on:
         required: false
         type: string
         default: ''
+      runner:
+        description: 'Runner label for the cheap jobs (eslint, typescript, tests, security). Single label string only - runs-on cannot take a JSON array from a variable. Build/Docker and SonarQube always stay on ubuntu-latest.'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      run_docker_on:
+        description: 'Event name that the build + Docker jobs are allowed to run on (e.g. push, pull_request). They are skipped on every other event.'
+        required: false
+        type: string
+        default: 'push'
+      sonar_on_master_only:
+        description: 'Run SonarQube only on pushes to master. Default false keeps the previous behaviour for existing callers.'
+        required: false
+        type: boolean
+        default: false
+      skip_tests_for_bots:
+        description: 'When the actor is a bot ([bot] suffix), skip tests, build, Docker and SonarQube. ESLint and TypeScript still run so the PR stays mergeable.'
+        required: false
+        type: boolean
+        default: false
     secrets:
       SONAR_TOKEN:
         description: 'SonarQube token from consuming repository'
@@ -135,7 +155,7 @@ jobs:
   # Job 1: ESLint Check
   eslint:
     name: ESLint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
 
     steps:
       - name: Checkout code
@@ -167,7 +187,7 @@ jobs:
   # Job 2: TypeScript Check
   typescript:
     name: TypeScript Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
 
     steps:
       - name: Checkout code
@@ -202,8 +222,8 @@ jobs:
   # Job 3: Tests and optional coverage report
   tests:
     name: Tests
-    runs-on: ubuntu-latest
-    if: ${{ inputs.test_command != '' }}
+    runs-on: ${{ inputs.runner }}
+    if: ${{ inputs.test_command != '' && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
 
     steps:
       - name: Checkout code
@@ -236,7 +256,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     needs: [eslint, typescript]
-    if: ${{ !inputs.skip_build }}
+    if: ${{ !inputs.skip_build && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
 
     steps:
       - name: Checkout code
@@ -274,7 +294,7 @@ jobs:
   # Job 5: Security Audit (runs in parallel, doesn't block Docker)
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     if: ${{ !inputs.skip_security }}
 
     steps:
@@ -304,7 +324,7 @@ jobs:
     name: SonarQube Analysis
     runs-on: ubuntu-latest
     needs: [eslint, typescript, tests]
-    if: ${{ !inputs.skip_sonar && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') }}
+    if: ${{ !inputs.skip_sonar && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) && (!inputs.sonar_on_master_only || (github.event_name == 'push' && github.ref == 'refs/heads/master')) && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') }}
 
     steps:
       - name: Check SonarQube configuration
@@ -389,7 +409,7 @@ jobs:
     name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: [eslint, typescript, tests, build]
-    if: ${{ !inputs.skip_docker && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') && (inputs.skip_build || needs.build.result == 'success') }}
+    if: ${{ !inputs.skip_docker && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') && (inputs.skip_build || needs.build.result == 'success') }}
 
     steps:
       - name: Checkout repository
@@ -570,6 +590,11 @@ jobs:
 
     steps:
       - name: Check overall status
+        env:
+          EXPECT_TESTS: ${{ inputs.test_command != '' && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
+          EXPECT_BUILD: ${{ !inputs.skip_build && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
+          EXPECT_SONAR: ${{ !inputs.skip_sonar && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) && (!inputs.sonar_on_master_only || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
+          EXPECT_DOCKER: ${{ !inputs.skip_docker && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
         run: |
           echo "=== Backend Quality + Docker Gate Results ==="
           echo "ESLint: ${{ needs.eslint.result }}"
@@ -594,8 +619,8 @@ jobs:
             core_failed=true
           fi
 
-          # Test check (only if configured)
-          if [[ -n "${{ inputs.test_command }}" ]]; then
+          # Test check (only when tests were expected to run)
+          if [[ "$EXPECT_TESTS" == "true" ]]; then
             if [[ "${{ needs.tests.result }}" != "success" ]]; then
               echo "❌ Tests failed"
               core_failed=true
@@ -604,18 +629,18 @@ jobs:
             echo "ℹ️ Tests skipped"
           fi
 
-          # Build check (only if not skipped)
-          if [[ "${{ inputs.skip_build }}" != "true" ]]; then
+          # Build check (only when the build was expected to run)
+          if [[ "$EXPECT_BUILD" == "true" ]]; then
             if [[ "${{ needs.build.result }}" != "success" ]]; then
               echo "❌ Build check failed"
               core_failed=true
             fi
           else
-            echo "ℹ️ Build check skipped"
+            echo "ℹ️ Build check skipped for this event/actor"
           fi
 
           # SonarQube check is now informational only - does NOT block pipeline
-          if [[ "${{ inputs.skip_sonar }}" != "true" ]]; then
+          if [[ "$EXPECT_SONAR" == "true" ]]; then
             if [[ "${{ needs.sonarqube.result }}" == "success" ]]; then
               echo "✅ SonarQube analysis completed successfully (informational)"
             elif [[ "${{ needs.sonarqube.result }}" == "failure" ]]; then
@@ -641,7 +666,7 @@ jobs:
           fi
 
           # Docker build status (informational)
-          if [[ "${{ inputs.skip_docker }}" != "true" ]]; then
+          if [[ "$EXPECT_DOCKER" == "true" ]]; then
             if [[ "${{ needs.docker-build.result }}" == "success" ]]; then
               echo "✅ Docker image built successfully"
             elif [[ "${{ needs.docker-build.result }}" == "failure" ]]; then
