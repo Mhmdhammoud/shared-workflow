@@ -28,21 +28,6 @@ on:
         required: false
         type: string
         default: ''
-      coverage_artifact_name:
-        description: 'Optional artifact name used to pass coverage to SonarQube'
-        required: false
-        type: string
-        default: ''
-      coverage_report_path:
-        description: 'Coverage file or directory uploaded by the test job'
-        required: false
-        type: string
-        default: 'coverage/lcov.info'
-      coverage_download_path:
-        description: 'Directory where SonarQube downloads the coverage artifact'
-        required: false
-        type: string
-        default: 'coverage'
       build_command:
         description: 'Build command'
         required: false
@@ -78,11 +63,6 @@ on:
         required: false
         type: string
         default: 'ghcr.io'
-      skip_sonar:
-        description: 'Skip SonarQube analysis'
-        required: false
-        type: boolean
-        default: false
       skip_security:
         description: 'Skip security audit'
         required: false
@@ -114,7 +94,7 @@ on:
         type: string
         default: ''
       runner:
-        description: 'Runner label for the cheap jobs (eslint, typescript, tests, security). Single label string only - runs-on cannot take a JSON array from a variable. Build/Docker and SonarQube always stay on ubuntu-latest.'
+        description: 'Runner label for the cheap jobs (eslint, typescript, tests, security). Single label string only - runs-on cannot take a JSON array from a variable. Build/Docker always stay on ubuntu-latest.'
         required: false
         type: string
         default: 'ubuntu-latest'
@@ -123,24 +103,11 @@ on:
         required: false
         type: string
         default: 'push'
-      sonar_on_master_only:
-        description: 'Run SonarQube only on pushes to master. Default false keeps the previous behaviour for existing callers.'
-        required: false
-        type: boolean
-        default: false
       skip_tests_for_bots:
-        description: 'When the actor is a bot ([bot] suffix), skip tests, build, Docker and SonarQube. ESLint and TypeScript still run so the PR stays mergeable.'
+        description: 'When the actor is a bot ([bot] suffix), skip tests, build and Docker. ESLint and TypeScript still run so the PR stays mergeable.'
         required: false
         type: boolean
         default: false
-    secrets:
-      SONAR_TOKEN:
-        description: 'SonarQube token from consuming repository'
-        required: false
-      SONAR_HOST_URL:
-        description: 'SonarQube host URL from consuming repository'
-        required: false
-
 permissions:
   contents: read
   pull-requests: write
@@ -219,7 +186,7 @@ jobs:
       - name: Run TypeScript type check
         run: ${{ inputs.type_check_command }}
 
-  # Job 3: Tests and optional coverage report
+  # Job 3: Tests
   tests:
     name: Tests
     runs-on: ${{ inputs.runner }}
@@ -241,15 +208,6 @@ jobs:
 
       - name: Run tests
         run: ${{ inputs.test_command }}
-
-      - name: Upload coverage report
-        if: ${{ inputs.coverage_artifact_name != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.coverage_artifact_name }}
-          path: ${{ inputs.coverage_report_path }}
-          if-no-files-found: error
-          retention-days: 1
 
   # Job 4: Build
   build:
@@ -319,92 +277,7 @@ jobs:
           ${{ inputs.audit_command }} || echo "⚠️ Vulnerabilities found (exit code: $?)"
           echo "Audit completed - check results above"
 
-  # Job 6: SonarQube Analysis (runs after tests so coverage can be imported)
-  sonarqube:
-    name: SonarQube Analysis
-    runs-on: ubuntu-latest
-    needs: [eslint, typescript, tests]
-    if: ${{ !inputs.skip_sonar && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) && (!inputs.sonar_on_master_only || (github.event_name == 'push' && github.ref == 'refs/heads/master')) && !cancelled() && needs.eslint.result == 'success' && needs.typescript.result == 'success' && (inputs.test_command == '' || needs.tests.result == 'success') }}
-
-    steps:
-      - name: Check SonarQube configuration
-        id: sonar_check
-        run: |
-          if [[ -z "${{ secrets.SONAR_TOKEN }}" ]]; then
-            echo "skip_sonar=true" >> $GITHUB_OUTPUT
-            echo "⚠️ SONAR_TOKEN not provided, skipping SonarQube analysis"
-          else
-            echo "skip_sonar=false" >> $GITHUB_OUTPUT
-            echo "✅ SonarQube configuration found"
-          fi
-
-      - name: Checkout code
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.checkout_ref || github.sha }}
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ inputs.node_version }}
-          cache: ${{ inputs.package_manager }}
-          cache-dependency-path: ${{ inputs.cache_dependency_path }}
-
-      - name: Cache SonarQube Scanner
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.sonar/cache
-            .scannerwork/
-          key: sonar-${{ runner.os }}-${{ hashFiles('src/**/*', 'sonar-project.properties') }}
-          restore-keys: |
-            sonar-${{ runner.os }}-
-
-      - name: Install dependencies
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        run: ${{ inputs.install_command }}
-
-      - name: Download coverage report
-        if: steps.sonar_check.outputs.skip_sonar == 'false' && inputs.coverage_artifact_name != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.coverage_artifact_name }}
-          path: ${{ inputs.coverage_download_path }}
-
-      - name: Read SonarQube project key
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        id: sonar_config
-        run: |
-          if [[ -f "sonar-project.properties" ]]; then
-            PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d'=' -f2 | tr -d ' ')
-            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
-            echo "Found SonarQube project key: $PROJECT_KEY"
-          else
-            PROJECT_KEY=$(echo "${{ github.repository }}" | tr '/' '-')
-            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
-            echo "No sonar-project.properties found, using repository name: $PROJECT_KEY"
-          fi
-
-      - name: SonarQube Scan
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: SonarSource/sonarqube-scan-action@v6
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-      - name: SonarQube Quality Gate Check
-        if: steps.sonar_check.outputs.skip_sonar == 'false'
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-  # Job 7: Docker Build (only depends on core quality checks)
+  # Job 6: Docker Build (only depends on core quality checks)
   docker-build:
     name: Docker Build & Push
     runs-on: ubuntu-latest
@@ -518,11 +391,11 @@ jobs:
           echo "Build Args: ${{ steps.meta.outputs.build_args }}"
           echo "Package Version: ${{ steps.package_version.outputs.version }}"
 
-  # Job 8: PR Comments & Summary
+  # Job 7: PR Comments & Summary
   pr-summary:
     name: PR Quality Summary
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, tests, build, security, sonarqube, docker-build]
+    needs: [eslint, typescript, tests, build, security, docker-build]
     if: always() && github.event_name == 'pull_request'
 
     steps:
@@ -530,19 +403,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
-
-      - name: Read SonarQube project key
-        id: sonar_config
-        run: |
-          if [[ -f "sonar-project.properties" ]]; then
-            PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d'=' -f2 | tr -d ' ')
-            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
-            echo "Found SonarQube project key: $PROJECT_KEY"
-          else
-            PROJECT_KEY=$(echo "${{ github.repository }}" | tr '/' '-')
-            echo "project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
-            echo "No sonar-project.properties found, using repository name: $PROJECT_KEY"
-          fi
 
       - name: Checkout shared workflow repository
         uses: actions/checkout@v6
@@ -571,21 +431,16 @@ jobs:
           HAS_TESTS: ${{ inputs.test_command != '' }}
           BUILD_RESULT: ${{ needs.build.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          SONAR_RESULT: ${{ needs.sonarqube.result }}
           DOCKER_RESULT: ${{ needs.docker-build.result }}
-          PROJECT_KEY: ${{ steps.sonar_config.outputs.project_key }}
-          SKIP_SONAR: ${{ inputs.skip_sonar }}
           SKIP_SECURITY: ${{ inputs.skip_security }}
           SKIP_DOCKER: ${{ inputs.skip_docker }}
           SKIP_BUILD: ${{ inputs.skip_build }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # Job 9: Overall Status Check
+  # Job 8: Overall Status Check
   quality-gate:
     name: Quality Gate
     runs-on: ubuntu-latest
-    needs: [eslint, typescript, tests, build, security, sonarqube, docker-build]
+    needs: [eslint, typescript, tests, build, security, docker-build]
     if: always()
 
     steps:
@@ -593,7 +448,6 @@ jobs:
         env:
           EXPECT_TESTS: ${{ inputs.test_command != '' && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
           EXPECT_BUILD: ${{ !inputs.skip_build && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
-          EXPECT_SONAR: ${{ !inputs.skip_sonar && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) && (!inputs.sonar_on_master_only || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
           EXPECT_DOCKER: ${{ !inputs.skip_docker && github.event_name == inputs.run_docker_on && !(inputs.skip_tests_for_bots && endsWith(github.actor, '[bot]')) }}
         run: |
           echo "=== Backend Quality + Docker Gate Results ==="
@@ -602,7 +456,6 @@ jobs:
           echo "Tests: ${{ needs.tests.result }}"
           echo "Build: ${{ needs.build.result }}"
           echo "Security: ${{ needs.security.result }}"
-          echo "SonarQube: ${{ needs.sonarqube.result }}"
           echo "Docker Build: ${{ needs.docker-build.result }}"
           echo "=========================="
 
@@ -639,19 +492,6 @@ jobs:
             echo "ℹ️ Build check skipped for this event/actor"
           fi
 
-          # SonarQube check is now informational only - does NOT block pipeline
-          if [[ "$EXPECT_SONAR" == "true" ]]; then
-            if [[ "${{ needs.sonarqube.result }}" == "success" ]]; then
-              echo "✅ SonarQube analysis completed successfully (informational)"
-            elif [[ "${{ needs.sonarqube.result }}" == "failure" ]]; then
-              echo "⚠️ SonarQube analysis failed (informational only - does not block pipeline)"
-            else
-              echo "ℹ️ SonarQube analysis skipped"
-            fi
-          else
-            echo "ℹ️ SonarQube check skipped"
-          fi
-
           # Security audit is informational only
           if [[ "${{ inputs.skip_security }}" != "true" ]]; then
             if [[ "${{ needs.security.result }}" == "success" ]]; then
@@ -680,9 +520,9 @@ jobs:
 
           if [[ "$core_failed" == "true" ]]; then
             echo "❌ Quality Gate FAILED - Core checks must pass"
-            echo "Note: SonarQube and Security audits are informational only"
+            echo "Note: Security audit is informational only"
             exit 1
           else
             echo "✅ Quality Gate PASSED - Core checks successful"
-            echo "Note: SonarQube and Security results are available for review but do not affect pipeline status"
+            echo "Note: Security audit results are informational and do not affect pipeline status"
           fi
